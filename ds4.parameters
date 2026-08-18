@@ -2,7 +2,7 @@
 # Update these when base infrastructure changes (e.g. a CUDA upgrade); the
 # release tracker copies them into every generated recipe.
 
-CUDA_VERSION=13.1.1
+CUDA_VERSION=13.1.2
 UBUNTU_VERSION=24.04
 
 # nvcc template instantiation in cuda/mmq/ is memory-hungry.  4 parallel jobs

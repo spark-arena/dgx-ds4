@@ -19,7 +19,7 @@
 #      RDMA transport is silently compiled out, and libibverbs must be present
 #      at RUN time or the dlopen fails.
 
-ARG CUDA_VERSION="13.1.1"
+ARG CUDA_VERSION="13.1.2"
 ARG UBUNTU_VERSION="24.04"
 
 # ---------------------------------------------------------------------------
