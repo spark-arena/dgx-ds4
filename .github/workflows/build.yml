@@ -1,0 +1,274 @@
+name: ds4 Tracker
+
+# Upstream (antirez/ds4) publishes neither tags nor releases, so there is no
+# monotonic version to compare.  This tracker polls the HEAD commit of a branch
+# and rebuilds when the SHA changes from the one pinned in the current recipe.
+
+on:
+  schedule:
+    # Twice daily; upstream is fast-moving but a build is ~an hour per arch.
+    - cron: '0 5,17 * * *'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Force-build a specific branch, tag or 40-hex commit SHA. Blank = HEAD of the tracked branch.'
+        required: false
+        type: string
+      no_cache:
+        description: 'Build without the Docker layer cache'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  DS4_BRANCH: main
+  IMAGE_REPO: ghcr.io/spark-arena/dgx-ds4
+
+concurrency:
+  group: ds4-tracker
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.compare.outputs.should_build }}
+      ds4_ref: ${{ steps.upstream.outputs.ds4_ref }}
+      ds4_version: ${{ steps.upstream.outputs.ds4_version }}
+      cuda_version: ${{ steps.params.outputs.CUDA_VERSION }}
+      ubuntu_version: ${{ steps.params.outputs.UBUNTU_VERSION }}
+      build_jobs: ${{ steps.params.outputs.BUILD_JOBS }}
+      ds4_repo: ${{ steps.params.outputs.DS4_REPO }}
+      cuda_short: ${{ steps.params.outputs.cuda_short }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse shared parameters
+        id: params
+        run: |
+          PARAMS_FILE="ds4.parameters"
+          [[ -f "$PARAMS_FILE" ]] || { echo "::error::Missing ${PARAMS_FILE}"; exit 1; }
+
+          while IFS='=' read -r key value || [[ -n "$key" ]]; do
+            [[ "$key" =~ ^[[:space:]]*# ]] && continue
+            key=$(echo "$key" | xargs)
+            [[ -z "$key" ]] && continue
+            value=$(echo "$value" | xargs)
+            echo "${key}=${value}" >> "$GITHUB_OUTPUT"
+          done < "$PARAMS_FILE"
+
+          CUDA_VERSION=$(grep '^CUDA_VERSION=' "$PARAMS_FILE" | head -1 | cut -d= -f2 | xargs)
+          echo "cuda_short=$(echo "$CUDA_VERSION" | cut -d. -f1,2 | tr -d '.')" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve upstream commit
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          REPO_SLUG="antirez/ds4"
+          TARGET="${INPUT_REF:-$DS4_BRANCH}"
+
+          # Resolves a branch name, tag or SHA to a full commit object.
+          COMMIT_JSON=$(gh api "repos/${REPO_SLUG}/commits/${TARGET}") || {
+            echo "::error::Could not resolve ${TARGET} in ${REPO_SLUG}"
+            exit 1
+          }
+
+          SHA=$(echo "$COMMIT_JSON" | jq -r '.sha')
+          # Committer date is the stable, reproducible version axis; the build
+          # date would produce a different version for the same source.
+          DATE=$(echo "$COMMIT_JSON" | jq -r '.commit.committer.date' | cut -dT -f1 | tr -d '-')
+
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Bad SHA: ${SHA}"; exit 1; }
+
+          echo "ds4_ref=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "ds4_version=${DATE}-${SHA:0:7}" >> "$GITHUB_OUTPUT"
+          echo "Upstream ${TARGET} -> ${SHA} (${DATE})"
+
+      - name: Compare against pinned recipe
+        id: compare
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          NEW_REF: ${{ steps.upstream.outputs.ds4_ref }}
+        run: |
+          RECIPE=$(ls recipes/ds4-*.recipe 2>/dev/null | head -1 || true)
+          CURRENT=""
+          if [[ -n "$RECIPE" ]]; then
+            CURRENT=$(grep '^DS4_REF=' "$RECIPE" | head -1 | cut -d= -f2 | xargs)
+            echo "Current: ${CURRENT} (from ${RECIPE})"
+          else
+            echo "No existing recipe"
+          fi
+
+          if [[ -n "$INPUT_REF" ]]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "Manual trigger: building ${NEW_REF}"
+          elif [[ "$CURRENT" != "$NEW_REF" ]]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "New upstream commit: ${NEW_REF}"
+          else
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "Already up to date"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ds4 emits a single -gencode with no PTX fallback and enables MXFP4
+          # only for sm_120a/sm_121a, so one image == one GPU architecture.
+          # Both entries build natively -- no QEMU.
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            cuda_arch: sm_121        # GB10 / DGX Spark
+            arch_suffix: sm121a
+            cpu_flag: -mcpu=neoverse-v2
+          - runner: ubuntu-24.04
+            platform: linux/amd64
+            cuda_arch: sm_120        # RTX / PRO Blackwell
+            arch_suffix: sm120a
+            cpu_flag: -march=x86-64-v3
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost /opt/hostedtoolcache || true
+          sudo apt-get clean
+          df -h /
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (${{ matrix.arch_suffix }})
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: runtime
+          platforms: ${{ matrix.platform }}
+          push: true
+          no-cache: ${{ inputs.no_cache == true }}
+          provenance: false
+          tags: |
+            ${{ env.IMAGE_REPO }}:${{ needs.check.outputs.ds4_version }}-${{ matrix.arch_suffix }}-cu${{ needs.check.outputs.cuda_short }}
+            ${{ env.IMAGE_REPO }}:${{ matrix.arch_suffix }}
+          build-args: |
+            CUDA_VERSION=${{ needs.check.outputs.cuda_version }}
+            UBUNTU_VERSION=${{ needs.check.outputs.ubuntu_version }}
+            BUILD_JOBS=${{ needs.check.outputs.build_jobs }}
+            DS4_REPO=${{ needs.check.outputs.ds4_repo }}
+            DS4_REF=${{ needs.check.outputs.ds4_ref }}
+            DS4_CUDA_ARCH=${{ matrix.cuda_arch }}
+            DS4_CPU_FLAG=${{ matrix.cpu_flag }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/antirez/ds4
+            org.opencontainers.image.revision=${{ needs.check.outputs.ds4_ref }}
+            org.opencontainers.image.version=${{ needs.check.outputs.ds4_version }}
+            maintainer=spark-arena <open-source-team@scitrera.com>
+            dev.scitrera.ds4_version=${{ needs.check.outputs.ds4_version }}
+            dev.scitrera.ds4_ref=${{ needs.check.outputs.ds4_ref }}
+            dev.scitrera.cuda_version=${{ needs.check.outputs.cuda_version }}
+            dev.scitrera.cuda_arch=${{ matrix.cuda_arch }}
+          cache-from: type=registry,ref=${{ env.IMAGE_REPO }}:buildcache-${{ matrix.arch_suffix }}
+          cache-to: type=registry,ref=${{ env.IMAGE_REPO }}:buildcache-${{ matrix.arch_suffix }},mode=max
+
+  manifest:
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish multi-arch manifest
+        env:
+          VERSION: ${{ needs.check.outputs.ds4_version }}
+          CUDA_SHORT: ${{ needs.check.outputs.cuda_short }}
+        run: |
+          ARM="${IMAGE_REPO}:${VERSION}-sm121a-cu${CUDA_SHORT}"
+          AMD="${IMAGE_REPO}:${VERSION}-sm120a-cu${CUDA_SHORT}"
+
+          # A manifest pairing arm64=sm_121a with amd64=sm_120a: both are
+          # Blackwell with MXFP4, so `docker pull` on either platform gets
+          # equivalent capability.  Other architectures are out of scope --
+          # see README "Build constraints".
+          docker buildx imagetools create \
+            -t "${IMAGE_REPO}:${VERSION}-cu${CUDA_SHORT}" \
+            -t "${IMAGE_REPO}:latest" \
+            "$ARM" "$AMD"
+
+          docker buildx imagetools inspect "${IMAGE_REPO}:${VERSION}-cu${CUDA_SHORT}"
+
+  commit-recipe:
+    needs: [check, build, manifest]
+    # Only record a version we actually published; a forced rebuild of an
+    # arbitrary ref must not repoint the tracked recipe.
+    if: inputs.ref == ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate and commit recipe
+        env:
+          DS4_REF: ${{ needs.check.outputs.ds4_ref }}
+          DS4_VERSION: ${{ needs.check.outputs.ds4_version }}
+          DS4_REPO_URL: ${{ needs.check.outputs.ds4_repo }}
+          CUDA_VERSION: ${{ needs.check.outputs.cuda_version }}
+          UBUNTU_VERSION: ${{ needs.check.outputs.ubuntu_version }}
+          BUILD_JOBS: ${{ needs.check.outputs.build_jobs }}
+        run: |
+          RECIPE_FILE="recipes/ds4-${DS4_VERSION}.recipe"
+
+          cat > "$RECIPE_FILE" <<EOF
+          # ds4 / DwarfStar build recipe.
+          #
+          # Upstream publishes neither tags nor releases, so the version axis is the
+          # commit date plus a short SHA and DS4_REF pins the full 40-hex commit.
+
+          DS4_REPO=${DS4_REPO_URL}
+          DS4_REF=${DS4_REF}
+          DS4_VERSION=${DS4_VERSION}
+
+          CUDA_VERSION=${CUDA_VERSION}
+          UBUNTU_VERSION=${UBUNTU_VERSION}
+          BUILD_JOBS=${BUILD_JOBS}
+
+          IMAGE_REPO=${IMAGE_REPO}
+          EOF
+          sed -i 's/^          //' "$RECIPE_FILE"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          mkdir -p recipes/archive
+          for old in recipes/ds4-*.recipe; do
+            [[ "$old" == "$RECIPE_FILE" ]] && continue
+            [[ -f "$old" ]] || continue
+            git mv "$old" recipes/archive/
+          done
+
+          git add "$RECIPE_FILE" recipes/archive
+          git diff --cached --quiet && { echo "Nothing to commit"; exit 0; }
+          git commit -m "build: ds4 ${DS4_VERSION} (${DS4_REF})"
+          git push

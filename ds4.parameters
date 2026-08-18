@@ -1,0 +1,13 @@
+# Shared build parameters for ds4 image recipes.
+# Update these when base infrastructure changes (e.g. a CUDA upgrade); the
+# release tracker copies them into every generated recipe.
+
+CUDA_VERSION=13.1.1
+UBUNTU_VERSION=24.04
+
+# nvcc template instantiation in cuda/mmq/ is memory-hungry.  4 parallel jobs
+# fits the 16 GB GitHub runners; lower this first if a build is OOM-killed.
+BUILD_JOBS=4
+
+DS4_REPO=https://github.com/antirez/ds4.git
+IMAGE_REPO=ghcr.io/spark-arena/dgx-ds4
