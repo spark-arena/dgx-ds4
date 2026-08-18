@@ -154,8 +154,14 @@ are fast. `BUILD_JOBS` defaults to 4; lower it first if nvcc is OOM-killed.
 
 ## Licence
 
-The build tooling in this repository is MIT (see `LICENSE`). ds4 itself is MIT,
-Copyright (c) 2026 The ds4.c authors and (c) 2023-2026 The ggml authors — see
-[the upstream LICENSE](https://github.com/antirez/ds4/blob/main/LICENSE).
+The build tooling in this repository is BSD 3-Clause, Copyright (c) Scitrera LLC
+— see [`LICENSE`](LICENSE).
+
+ds4 itself is separately licensed: MIT, Copyright (c) 2026 The ds4.c authors and
+(c) 2023-2026 The ggml authors — see
+[the upstream LICENSE](https://github.com/antirez/ds4/blob/main/LICENSE). The
+published images contain ds4 binaries and are covered by that licence, plus the
+[NVIDIA Deep Learning Container License](https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license)
+for the `nvidia/cuda` base layers.
 
 This project is not affiliated with NVIDIA, DeepSeek, or the ds4 authors.
