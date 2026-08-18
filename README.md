@@ -20,7 +20,7 @@ docker run --rm -it \
   --gpus all \
   --network host --ipc=host \
   -v ~/models:/data \
-  ghcr.io/spark-arena/dgx-ds4:stable \
+  ghcr.io/spark-arena/dgx-ds4:latest \
   ds4-server \
     --cuda \
     -m /data/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf \
@@ -41,9 +41,8 @@ ds4 is deliberately not a general GGUF loader; arbitrary GGUFs will not load.
 
 | Tag | Meaning |
 |---|---|
-| `stable` | Multi-arch. Last build smoke-tested on real hardware. **Use this.** |
-| `latest` | Multi-arch. Tracks upstream `main` HEAD, unvetted. |
-| `<version>-cu131` | Multi-arch, immutable. `<version>` is `<commit-date>-<sha7>`. |
+| `latest` | Multi-arch. The latest tracked upstream `main` commit. |
+| `<version>-cu131` | Multi-arch, immutable. `<version>` is `<commit-date>-<sha7>`. **Pin this** for anything reproducible. |
 | `<version>-sm121a-cu131` | arm64 only, GB10 / DGX Spark. |
 | `<version>-sm120a-cu131` | amd64 only, RTX / PRO Blackwell. |
 | `sm121a` / `sm120a` | Moving per-architecture tags for the latest build. |
@@ -54,7 +53,7 @@ unlike a build date. The full 40-hex commit is pinned in `recipes/` and
 recorded in the image as `dev.scitrera.ds4_ref`.
 
 ```bash
-docker inspect ghcr.io/spark-arena/dgx-ds4:stable --format '{{json .Config.Labels}}' | jq
+docker inspect ghcr.io/spark-arena/dgx-ds4:latest --format '{{json .Config.Labels}}' | jq
 ```
 
 ## Build constraints
@@ -69,7 +68,7 @@ that, `-DDS4_CUDA_HAVE_MXF4=1` is a compile-time global set only for
 `sm_120a`/`sm_121a`, so a fatbin spanning Blackwell and Hopper cannot be
 produced without patching upstream.
 
-The multi-arch `latest` / `stable` manifests therefore pair **arm64 = `sm_121a`
+The multi-arch `latest` and `<version>-cu131` manifests therefore pair **arm64 = `sm_121a`
 (GB10)** with **amd64 = `sm_120a` (RTX / PRO Blackwell)** — both Blackwell,
 both MXFP4-capable, so the two platforms have equivalent capability. Ada
 (`sm_89`), Hopper (`sm_90`) and Grace-Hopper are out of scope; add a matrix
@@ -108,7 +107,6 @@ build-image.sh                local/manual builds from a recipe
 recipes/ds4-<version>.recipe  the currently-tracked upstream commit
 recipes/archive/              superseded recipes
 .github/workflows/build.yml   commit tracker -> per-arch build -> manifest
-.github/workflows/promote.yml manual `:stable` promotion
 ```
 
 A **recipe** pins one upstream commit. The GPU architecture is not part of it:
@@ -153,9 +151,6 @@ are fast. `BUILD_JOBS` defaults to 4; lower it first if nvcc is OOM-killed.
 
 `workflow_dispatch` accepts any branch, tag or SHA — useful for upstream's
 `glm5.2`, `ds4f-mxfp4` and `responses-api` branches.
-
-`promote.yml` moves `:stable`, and refuses to run against a version whose
-manifest was never published.
 
 ## Licence
 
