@@ -1,0 +1,14 @@
+# ds4 / DwarfStar build recipe.
+#
+# Upstream publishes neither tags nor releases, so the version axis is the
+# commit date plus a short SHA and DS4_REF pins the full 40-hex commit.
+
+DS4_REPO=https://github.com/antirez/ds4.git
+DS4_REF=bd66c402070042bf0a79ad6ece8242de4c93680c
+DS4_VERSION=20260912-bd66c40
+
+CUDA_VERSION=13.1.2
+UBUNTU_VERSION=24.04
+BUILD_JOBS=4
+
+IMAGE_REPO=ghcr.io/spark-arena/dgx-ds4
